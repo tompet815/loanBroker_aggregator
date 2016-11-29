@@ -1,6 +1,6 @@
 package starter;
 
-import normalizer.Aggregator;
+import aggregator.Aggregator;
 
 
 public class Starter {

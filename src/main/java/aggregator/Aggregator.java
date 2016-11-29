@@ -1,4 +1,4 @@
-package normalizer;
+package aggregator;
 
 import com.rabbitmq.client.AMQP.*;
 import com.rabbitmq.client.Channel;
@@ -27,27 +27,27 @@ public class Aggregator {
     private final RabbitMQConnector connector = new RabbitMQConnector();
     private Channel channel;
     private String queueName;
-    private final String EXCHANGENAME = "whatAggrigator";
-    private final String LOANBROKERWS = "helloABCDE";//CHange later
+   private final String EXCHANGENAME = "whatAggrigator";
+    private final String LOANBROKEREXCHANGE = "whatLoanBroker";//CHange later
     private final MessageUtility util = new MessageUtility();
     private Map<String, Map<Integer, String>> replyMap;//<corrId,<messageNo,response>>
 
     //initialize Aggregator
     public void init() throws IOException {
         channel = connector.getChannel();
-        channel.exchangeDeclare(EXCHANGENAME, "fanout");
+        channel.exchangeDeclare(EXCHANGENAME, "direct");
         queueName = channel.queueDeclare().getQueue();
         channel.queueBind(queueName, EXCHANGENAME, "");
-        replyMap = new HashMap();
+                replyMap = new HashMap();
         receive();
     }
 
     private LoanResponse getBestResult(Map<Integer, String> map) throws JAXBException {
         LoanResponse bestRes = null;
-        
-          for (Map.Entry<Integer, String> entry : map.entrySet()) {
+
+        for (Map.Entry<Integer, String> entry : map.entrySet()) {
             String bodyString = entry.getValue();
-              System.out.println("body "+bodyString);
+            System.out.println("body " + bodyString);
             LoanResponse res = unmarchal(bodyString);
             if (bestRes == null || bestRes.getInterestRate() < res.getInterestRate()) {
                 bestRes = res;
@@ -58,9 +58,10 @@ public class Aggregator {
 
     private void handleMessage(String bodyString, BasicProperties prop) throws JAXBException, IOException {
         String corrId = prop.getCorrelationId();
+        System.out.println("CorrID is :" + corrId);
         int total = (int) prop.getHeaders().get("total");
         int messageNo = (int) prop.getHeaders().get("messageNo");
-        System.out.println("handling message no "+ messageNo);
+        System.out.println("handling message no " + messageNo);
         if (replyMap.containsKey(corrId)) {
             Map<Integer, String> map = replyMap.get(corrId);
             map.put(messageNo, bodyString);
@@ -69,7 +70,7 @@ public class Aggregator {
         }
         else {
             Map<Integer, String> contentMap = new HashMap();
-            
+
             contentMap.put(messageNo, bodyString);
             replyMap.put(corrId, contentMap);
         }
@@ -118,7 +119,7 @@ public class Aggregator {
         JAXBContext jc2 = JAXBContext.newInstance(LoanResponse.class);
         Marshaller marshaller = jc2.createMarshaller();
         marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, true);
-        JAXBElement<LoanResponse> je2 = new JAXBElement(new QName("Data"), LoanResponse.class, d);
+        JAXBElement<LoanResponse> je2 = new JAXBElement(new QName("LoanResponse"), LoanResponse.class, d);
         StringWriter sw = new StringWriter();
         marshaller.marshal(je2, sw);
 
@@ -138,15 +139,16 @@ public class Aggregator {
     //build a new property for messaging
     //send message to exchange
     public boolean send(BasicProperties prop, LoanResponse data) throws IOException, JAXBException {
- 
+
         //creating data for sending
         //send message to each bank in the banklist. 
         String xmlString = marchal(data);
         byte[] body = util.serializeBody(xmlString);
 
-        System.out.println("sending from normalizer to " + LOANBROKERWS + " : " + xmlString);
+        System.out.println("sending from Aggregator to " + LOANBROKEREXCHANGE + " : " + xmlString);
         //  channel.basicPublish(LOANBROKERWS, "", prop, body);
-        channel.basicPublish("", LOANBROKERWS, prop, body);//change here. it is queue now
+        
+        channel.basicPublish(LOANBROKEREXCHANGE, "", prop, body);//change here. it is queue now
         return true;
     }
 
