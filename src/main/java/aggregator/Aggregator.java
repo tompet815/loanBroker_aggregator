@@ -5,11 +5,14 @@ import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Consumer;
 import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
+import connector.IRabbitMQConnector;
 import connector.RabbitMQConnector;
 import java.io.IOException;
 import java.io.StringReader;
 import java.io.StringWriter;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -24,22 +27,33 @@ import utilities.MessageUtility;
 
 public class Aggregator {
 
-    private final RabbitMQConnector connector = new RabbitMQConnector();
+    private final IRabbitMQConnector connector ;
     private Channel channel;
     private String queueName;
-   private final String EXCHANGENAME = "whatAggrigator";
-    private final String LOANBROKEREXCHANGE = "whatLoanBroker";//CHange later
+    private final String EXCHANGENAME = "whatAggrigator";
+    private final String LOANBROKEREXCHANGE = "whatLoanBroker";
     private final MessageUtility util = new MessageUtility();
     private Map<String, Map<Integer, String>> replyMap;//<corrId,<messageNo,response>>
+    private List<String> sentCorrIDs;
+private Consumer consumer;
 
+  public Aggregator(IRabbitMQConnector con, Consumer cons){
+  connector=con;
+  consumer=cons;
+  }
+    public Aggregator(){
+     connector= new RabbitMQConnector();
+    }
     //initialize Aggregator
     public void init() throws IOException {
+  
         channel = connector.getChannel();
         channel.exchangeDeclare(EXCHANGENAME, "direct");
         queueName = channel.queueDeclare().getQueue();
         channel.queueBind(queueName, EXCHANGENAME, "");
-                replyMap = new HashMap();
+        replyMap = new HashMap();
         receive();
+        sentCorrIDs = new ArrayList();
     }
 
     private LoanResponse getBestResult(Map<Integer, String> map) throws JAXBException {
@@ -47,48 +61,44 @@ public class Aggregator {
 
         for (Map.Entry<Integer, String> entry : map.entrySet()) {
             String bodyString = entry.getValue();
-            System.out.println("body " + bodyString);
             LoanResponse res = unmarchal(bodyString);
-            if (bestRes == null || bestRes.getInterestRate() < res.getInterestRate()) {
+            if (bestRes == null || bestRes.getInterestRate() > res.getInterestRate()) {
                 bestRes = res;
             }
         }
         return bestRes;
     }
 
-    private void handleMessage(String bodyString, BasicProperties prop) throws JAXBException, IOException {
+    private Map<String, Map<Integer, String>> handleMessage(String bodyString, BasicProperties prop) throws JAXBException, IOException {
         String corrId = prop.getCorrelationId();
-        System.out.println("CorrID is :" + corrId);
         int total = (int) prop.getHeaders().get("total");
         int messageNo = (int) prop.getHeaders().get("messageNo");
-        System.out.println("handling message no " + messageNo);
         if (replyMap.containsKey(corrId)) {
             Map<Integer, String> map = replyMap.get(corrId);
             map.put(messageNo, bodyString);
             replyMap.put(corrId, map);
-
         }
         else {
             Map<Integer, String> contentMap = new HashMap();
-
             contentMap.put(messageNo, bodyString);
             replyMap.put(corrId, contentMap);
         }
-        if (total == replyMap.get(corrId).size()) {
+        if (total == replyMap.get(corrId).size() && !sentCorrIDs.contains(corrId)) {
             LoanResponse bestResult = getBestResult(replyMap.get(corrId));
             send(prop, bestResult);
-            System.out.println("sending ssn: " + bestResult.getSsn() + " interestRate:" + bestResult.getInterestRate());
+            System.out.println("sending corrId: " + corrId + " ssn: " + bestResult.getSsn() + " interestRate:" + bestResult.getInterestRate());
+            sentCorrIDs.add(corrId);
         }
+        return replyMap;
     }
 
     //Waiting asynchronously for messages
     public boolean receive() throws IOException {
 
         System.out.println(" [*] Waiting for messages.");
-        final Consumer consumer = new DefaultConsumer(channel) {
+          consumer = new DefaultConsumer(channel) {
             @Override
             public void handleDelivery(String consumerTag, Envelope envelope, BasicProperties properties, byte[] body) throws IOException {
-                System.out.println(" [x] Received ");
                 try {
                     String bodyString = removeBom(new String(body));
                     handleMessage(bodyString, properties);
@@ -97,7 +107,6 @@ public class Aggregator {
                     Logger.getLogger(Aggregator.class.getName()).log(Level.SEVERE, null, ex);
                 }
                 finally {
-                    System.out.println(" [x] Done");
                     channel.basicAck(envelope.getDeliveryTag(), false);
                 }
             }
@@ -146,9 +155,7 @@ public class Aggregator {
         byte[] body = util.serializeBody(xmlString);
 
         System.out.println("sending from Aggregator to " + LOANBROKEREXCHANGE + " : " + xmlString);
-        //  channel.basicPublish(LOANBROKERWS, "", prop, body);
-        
-        channel.basicPublish(LOANBROKEREXCHANGE, "", prop, body);//change here. it is queue now
+        channel.basicPublish(LOANBROKEREXCHANGE, "", prop, body);
         return true;
     }
 
